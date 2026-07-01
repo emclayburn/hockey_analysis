@@ -69,19 +69,51 @@ def get_consistent_performers(forwards, min_seasons=3):
     grouped = grouped[grouped["seasons"] >= min_seasons]
     return grouped
 
+def load_salary_data(filepath="data/contracts_2024.csv"):
+    salary = pd.read_csv(filepath)
+    salary = salary[salary["Pos.grouped"] == "F"].copy()
+    salary["cap_hit"] = (
+        salary["AAV"]
+        .str.replace("$", "", regex=False)
+        .str.replace(",", "", regex=False)
+        .astype(float)
+    )
+    salary = salary[["Player.ascii", "cap_hit"]].rename(columns={"Player.ascii": "name"})
+    
+    # Deduplicate — keep highest cap hit per player (most recent/relevant contract)
+    salary = salary.sort_values("cap_hit", ascending=False).drop_duplicates(subset="name")
+    return salary
+
+def merge_salary(consistent, salary):
+    """Join salary onto consistent performers dataframe."""
+    merged = consistent.merge(salary, on="name", how="left")
+    
+    # Calculate dollars per xGoal (efficiency metric)
+    merged["cap_per_xGoal"] = merged["cap_hit"] / merged["total_xGoals"]
+    
+    # Calculate value score: GAX relative to cap hit (higher = better value)
+    merged["value_score"] = merged["total_gax"] / (merged["cap_hit"] / 1_000_000)
+    
+    return merged
+
 if __name__ == "__main__":
     seasons = [2021, 2022, 2023, 2024, 2025]
     forwards = load_multiple_seasons(seasons)
     forwards = calculate_goals_above_expected(forwards)
-
     consistent = get_consistent_performers(forwards, min_seasons=3)
+    
+    salary = load_salary_data()
+    merged = merge_salary(consistent, salary)
 
-    print("=== Consistently Overperforming (elite finishers) ===")
-    print(consistent.sort_values("total_gax", ascending=False)[
-        ["name", "seasons", "teams", "total_goals", "total_xGoals", "total_gax", "avg_gax"]
+# Filter out ELC players (cap hit under $1M) for cleaner analysis
+    non_elc = merged[merged["cap_hit"] >= 1_000_000].dropna(subset=["cap_hit"])
+
+    print("=== Best Value Forwards (non-ELC) ===")
+    print(non_elc.sort_values("value_score", ascending=False)[
+        ["name", "seasons", "cap_hit", "total_gax", "value_score"]
     ].head(10).to_string())
 
-    print("\n=== Consistently Underperforming (Moneyball targets) ===")
-    print(consistent.sort_values("total_gax", ascending=True)[
-        ["name", "seasons", "teams", "total_goals", "total_xGoals", "total_gax", "avg_gax"]
+    print("\n=== Worst Value Forwards ===")
+    print(non_elc.sort_values("value_score", ascending=True)[
+        ["name", "seasons", "cap_hit", "total_gax", "value_score"]
     ].head(10).to_string())
